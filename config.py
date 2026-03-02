@@ -24,14 +24,18 @@ CONCURRENT_DOWNLOADS = 5
 
 # 存储路径
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
-IMAGES_DIR = os.path.join(OUTPUT_DIR, 'images')
-DATA_DIR = os.path.join(OUTPUT_DIR, 'data')
+OUTPUT1_DIR = os.path.join(BASE_DIR, 'output1')  # 模式1：总检索输出目录
+OUTPUT2_DIR = os.path.join(BASE_DIR, 'output2')  # 模式2：指定成员检索输出目录
+IMAGES_DIR = os.path.join(OUTPUT1_DIR, 'images')
+DATA_DIR = os.path.join(OUTPUT1_DIR, 'data')
 
 # 分类存储子目录
 BY_MEMBER_DIR = os.path.join(IMAGES_DIR, 'by_member')
 BY_DATE_DIR = os.path.join(IMAGES_DIR, 'by_date')
 BY_BLOG_DIR = os.path.join(IMAGES_DIR, 'by_blog')
+
+# 指定成员检索存储路径
+MEMBER_IMAGES_DIR = os.path.join(OUTPUT2_DIR, 'images')
 
 # 数据库配置
 DB_PATH = os.path.join(DATA_DIR, 'n46_blog.db')
@@ -42,6 +46,7 @@ IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
 # 创建目录
 def ensure_dirs():
     """确保所有必要的目录都存在"""
-    dirs = [OUTPUT_DIR, IMAGES_DIR, DATA_DIR, BY_MEMBER_DIR, BY_DATE_DIR, BY_BLOG_DIR]
+    dirs = [OUTPUT1_DIR, IMAGES_DIR, DATA_DIR, BY_MEMBER_DIR, BY_DATE_DIR, BY_BLOG_DIR,
+            OUTPUT2_DIR, MEMBER_IMAGES_DIR]
     for d in dirs:
         os.makedirs(d, exist_ok=True)

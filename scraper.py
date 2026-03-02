@@ -205,7 +205,9 @@ class N46Scraper:
                 for img in images:
                     self.db.save_image(img)
                 
-                print(f"  [{total_blogs}] {blog['title'][:30]}... - 作者: {blog['author']} - 图片: {len(images)}张")
+                # 过滤emoji字符避免编码错误
+                title = blog['title'][:30].encode('gbk', errors='ignore').decode('gbk')
+                print(f"  [{total_blogs}] {title}... - 作者: {blog['author']} - 图片: {len(images)}张")
             
             # 检查是否还有下一页
             total_count = int(data.get('count', 0))
@@ -405,6 +407,231 @@ class N46Scraper:
         for char in invalid_chars:
             filename = filename.replace(char, '_')
         return filename.strip() or 'unknown'
+    
+    def crawl_by_member(self, member_name, max_pages=3):
+        """指定成员检索模式 - 使用成员个人blog界面API
+        
+        Args:
+            member_name: 成员日文名（如"池田 瑛紗"）
+            max_pages: 最大爬取页数（默认3页）
+            
+        Returns:
+            爬取的博客数量
+        """
+        # 首先获取成员ID
+        member_id = self._get_member_id(member_name)
+        if not member_id:
+            print(f"未找到成员: {member_name}")
+            print("请确保成员名字正确，或使用模式1先爬取成员列表")
+            return 0
+        
+        print(f"开始检索成员: {member_name} (ID: {member_id})")
+        print(f"页数限制: {max_pages}")
+        print("="*60)
+        
+        page = 1
+        total_blogs = 0
+        
+        while True:
+            print(f"\n正在获取第 {page} 页...")
+            
+            # 使用成员个人blog界面的API
+            # URL格式: /s/n46/api/list/blog?ct=成员ID&page=页数
+            params = {"ct": member_id, "page": page}
+            data = self.fetch_api("list/blog", params)
+            
+            if not data:
+                print("API请求失败，停止爬取")
+                break
+            
+            # 解析博客列表
+            blogs = self.parse_blog_list_api(data)
+            
+            if not blogs:
+                print("没有更多博客了")
+                break
+            
+            print(f"获取到 {len(blogs)} 篇博客")
+            
+            for blog in blogs:
+                total_blogs += 1
+                
+                # 保存博客信息
+                self.db.save_blog(blog)
+                
+                # 从内容中提取图片
+                images = self._extract_images_from_content(blog['content'], blog['id'])
+                for img in images:
+                    self.db.save_image(img)
+                
+                # 过滤emoji字符避免编码错误
+                title = blog['title'][:30].encode('gbk', errors='ignore').decode('gbk')
+                print(f"  + [{total_blogs}] {title}... - 日期: {blog['publish_date'][:10]} - 图片: {len(images)}张")
+            
+            # 检查是否还有下一页
+            total_count = int(data.get('count', 0))
+            print(f"  进度: {total_blogs}/{total_count}")
+            
+            page += 1
+            if page > max_pages:
+                print(f"\n已达到最大页数限制 ({max_pages})")
+                break
+        
+        print(f"\n{'='*60}")
+        print(f"成员检索完成！")
+        print(f"  共获取: {total_blogs} 篇博客")
+        print(f"{'='*60}")
+        return total_blogs
+    
+    def _get_member_id(self, member_name):
+        """根据成员名字获取成员ID
+        
+        Args:
+            member_name: 成员日文名
+            
+        Returns:
+            成员ID或None
+        """
+        # 先尝试从数据库获取
+        self.db.cursor.execute(
+            'SELECT DISTINCT author_id FROM blogs WHERE author LIKE ? LIMIT 1',
+            (f'%{member_name}%',)
+        )
+        result = self.db.cursor.fetchone()
+        if result and result[0]:
+            return result[0]
+        
+        # 如果数据库中没有，尝试从API获取成员列表
+        try:
+            # 获取一页博客来查找成员ID
+            params = {"page": 1}
+            data = self.fetch_api("list/blog", params)
+            if data and data.get('data'):
+                for item in data['data']:
+                    if member_name in item.get('name', ''):
+                        return item.get('arti_code')
+        except Exception as e:
+            print(f"获取成员ID失败: {e}")
+        
+        return None
+    
+    async def download_images_by_member(self, member_name):
+        """下载指定成员的图片到output2目录
+        
+        Args:
+            member_name: 成员日文名
+        """
+        from config import MEMBER_IMAGES_DIR
+        from members import get_english_name
+        
+        # 获取该成员的所有待下载图片
+        self.db.cursor.execute('''
+            SELECT i.id, i.blog_id, i.original_url, b.author, b.publish_date
+            FROM images i
+            JOIN blogs b ON i.blog_id = b.id
+            WHERE b.author LIKE ? AND i.download_status = 0
+        ''', (f'%{member_name}%',))
+        
+        pending_images = self.db.cursor.fetchall()
+        
+        if not pending_images:
+            print(f"没有待下载的 {member_name} 的图片")
+            return
+        
+        print(f"\n开始下载 {member_name} 的 {len(pending_images)} 张图片...")
+        print("="*60)
+        
+        # 按博客ID分组
+        blog_images = {}
+        for img in pending_images:
+            blog_id = img[1]
+            if blog_id not in blog_images:
+                blog_images[blog_id] = []
+            blog_images[blog_id].append(img)
+        
+        # 获取英文名
+        english_name = get_english_name(member_name)
+        
+        async with aiohttp.ClientSession(headers=HEADERS) as session:
+            tasks = []
+            for blog_id, images in blog_images.items():
+                for idx, img in enumerate(images, 1):
+                    task = self._download_single_image_by_member(
+                        session, img, idx, english_name, member_name
+                    )
+                    tasks.append(task)
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            success = sum(1 for r in results if r is True)
+            failed = len(results) - success
+            
+            print(f"\n{'='*60}")
+            print(f"下载完成: 成功 {success} 张, 失败 {failed} 张")
+            print(f"{'='*60}")
+    
+    async def _download_single_image_by_member(self, session, img_data, img_index, 
+                                                english_name, member_jp_name):
+        """下载单张图片到output2目录
+        
+        Args:
+            session: aiohttp session
+            img_data: 图片数据
+            img_index: 该博客中的第几张图片
+            english_name: 成员英文名
+            member_jp_name: 成员日文名
+        """
+        async with self.semaphore:
+            img_id = img_data[0]
+            blog_id = img_data[1]
+            original_url = img_data[2]
+            author = img_data[3]
+            date = img_data[4]
+            
+            try:
+                # 解析日期
+                date_str = 'unknown'
+                if date and date != 'unknown':
+                    try:
+                        for fmt in ['%Y/%m/%d %H:%M:%S', '%Y.%m.%d', '%Y-%m-%d']:
+                            try:
+                                dt = datetime.strptime(date, fmt)
+                                date_str = dt.strftime('%Y%m%d')
+                                break
+                            except:
+                                continue
+                    except:
+                        pass
+                
+                # 获取文件扩展名
+                ext = self._get_extension(original_url)
+                
+                # 构建保存路径: output2/images/成员名/日期/英文_序号.jpg
+                from config import MEMBER_IMAGES_DIR
+                filename = f"{english_name}_{img_index}{ext}"
+                save_dir = Path(MEMBER_IMAGES_DIR) / member_jp_name / date_str
+                filepath = save_dir / filename
+                
+                # 下载图片
+                async with session.get(original_url, timeout=aiohttp.ClientTimeout(total=TIMEOUT)) as response:
+                    if response.status == 200:
+                        content = await response.read()
+                        
+                        # 保存文件
+                        filepath.parent.mkdir(parents=True, exist_ok=True)
+                        with open(filepath, 'wb') as f:
+                            f.write(content)
+                        
+                        # 更新数据库状态
+                        self.db.update_image_status(img_id, 1, str(filepath))
+                        return True
+                    else:
+                        print(f"  ✗ 下载失败: {original_url} (状态码: {response.status})")
+                        return False
+                        
+            except Exception as e:
+                print(f"  ✗ 下载图片出错: {original_url[:60]}... 错误: {e}")
+                return False
     
     def close(self):
         """关闭资源"""

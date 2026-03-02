@@ -29,8 +29,8 @@ def print_banner():
     """打印程序横幅"""
     banner = """
     ╔═══════════════════════════════════════════════════════════╗
-    ║           乃木坂46 博客图片爬虫 v1.0                      ║
-    ║           Nogizaka46 Blog Image Crawler                   ║
+    ║           紫团 博客图片爬虫 v1.1                      ║
+    ║           Purple Group Blog Image Crawler                   ║
     ╚═══════════════════════════════════════════════════════════╝
     """
     print(banner)
@@ -49,7 +49,7 @@ def cmd_crawl(args):
             max_pages=args.pages
         )
     
-    print(f"\n✓ 爬取完成！共获取 {total} 篇博客")
+    print(f"\n爬取完成！共获取 {total} 篇博客")
 
 
 def cmd_download(args):
@@ -59,7 +59,7 @@ def cmd_download(args):
     with N46Scraper() as scraper:
         asyncio.run(scraper.download_images())
     
-    print("\n✓ 下载完成！")
+    print("\n下载完成！")
 
 
 def cmd_stats(args):
@@ -98,7 +98,7 @@ def cmd_full(args):
         print("\n>>> 第二步：下载图片")
         asyncio.run(scraper.download_images())
     
-    print("\n✓ 全部完成！")
+    print("\n全部完成！")
 
 
 def cmd_export(args):
@@ -129,7 +129,34 @@ def cmd_export(args):
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(blog_list, f, ensure_ascii=False, indent=2)
         
-        print(f"✓ 已导出 {len(blog_list)} 篇博客到: {output_file}")
+        print(f"已导出 {len(blog_list)} 篇博客到: {output_file}")
+
+
+def cmd_member(args):
+    """指定成员检索命令"""
+    print("【模式】指定成员检索（模式2）")
+    print(f"【成员】{args.name}")
+    print(f"【页数】{args.pages}")
+    
+    from config import ensure_dirs
+    ensure_dirs()
+    
+    with N46Scraper() as scraper:
+        # 第一步：检索成员博客
+        print("\n>>> 第一步：检索成员博客")
+        total = scraper.crawl_by_member(
+            member_name=args.name,
+            max_pages=args.pages
+        )
+        
+        if total > 0:
+            # 第二步：下载图片
+            print(f"\n>>> 第二步：下载 {args.name} 的图片")
+            asyncio.run(scraper.download_images_by_member(args.name))
+        else:
+            print(f"\n未找到 {args.name} 的博客")
+    
+    print("\n成员检索完成！")
 
 
 def main():
@@ -141,31 +168,38 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python main.py crawl --pages 5          # 爬取前5页
-  python main.py download                 # 下载所有图片
-  python main.py full --pages 10          # 爬取10页并下载
-  python main.py stats                    # 查看统计
+  python main.py crawl --pages 5              # 模式1：总检索，爬取前5页
+  python main.py download                     # 模式1：下载所有图片
+  python main.py full --pages 10              # 模式1：完整流程
+  python main.py stats                        # 查看统计
+  python main.py member --name "池田 瑛紗"      # 模式2：指定成员检索（默认3页）
+  python main.py member --name "小川 彩" --pages 5  # 模式2：指定5页
         """
     )
-    
+
     subparsers = parser.add_subparsers(dest='command', help='可用命令')
-    
+
     # crawl 命令
     crawl_parser = subparsers.add_parser('crawl', help='爬取博客列表')
     crawl_parser.add_argument('--pages', type=int, help='限制爬取页数')
-    
+
     # download 命令
     download_parser = subparsers.add_parser('download', help='下载图片')
-    
+
     # stats 命令
     stats_parser = subparsers.add_parser('stats', help='显示统计信息')
-    
+
     # full 命令
     full_parser = subparsers.add_parser('full', help='完整流程（爬取+下载）')
     full_parser.add_argument('--pages', type=int, help='限制爬取页数')
-    
+
     # export 命令
     export_parser = subparsers.add_parser('export', help='导出数据')
+
+    # member 命令（指定成员检索 - 模式2）
+    member_parser = subparsers.add_parser('member', help='指定成员检索（模式2）')
+    member_parser.add_argument('--name', type=str, required=True, help='成员日文名（如"池田 瑛紗"）')
+    member_parser.add_argument('--pages', type=int, default=3, help='限制检索页数（默认3页）')
     
     args = parser.parse_args()
     
@@ -180,6 +214,7 @@ def main():
         'stats': cmd_stats,
         'full': cmd_full,
         'export': cmd_export,
+        'member': cmd_member,
     }
     
     if args.command in commands:
@@ -189,7 +224,7 @@ def main():
             print("\n\n⚠ 用户中断操作")
             sys.exit(0)
         except Exception as e:
-            print(f"\n✗ 错误: {e}")
+            print(f"\n错误: {e}")
             sys.exit(1)
     else:
         parser.print_help()

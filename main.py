@@ -29,8 +29,8 @@ def print_banner():
     """打印程序横幅"""
     banner = """
     ╔═══════════════════════════════════════════════════════════╗
-    ║           紫团 博客图片爬虫 v1.2                      ║
-    ║           Purple Group Blog Image Crawler                   ║
+    ║           乃木坂 博客图片爬虫 v1.3                           ║
+    ║           Purple Group Blog Image Crawler                 ║
     ╚═══════════════════════════════════════════════════════════╝
     """
     print(banner)

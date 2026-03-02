@@ -326,11 +326,14 @@ class N46Scraper:
                     
                     print(f"  [{total_blogs}] {blog['title'][:30]}... - {blog['author']}")
                     
-                    # 获取博客详情（包含图片）
+                    # 获取博客详情（包含图片和日期）
                     blog_detail = self._fetch_blog_detail(blog['url'])
                     if blog_detail:
                         blog['content'] = blog_detail.get('content', '')
                         blog['images'] = blog_detail.get('images', [])
+                        # 使用详情页获取的日期（更准确）
+                        if blog_detail.get('publish_date'):
+                            blog['publish_date'] = blog_detail['publish_date']
                     
                     # 保存博客信息
                     self.db.save_blog(blog)
@@ -641,11 +644,14 @@ class N46Scraper:
             for blog in blogs:
                 total_blogs += 1
                 
-                # 获取博客详情（包含图片）
+                # 获取博客详情（包含图片和日期）
                 blog_detail = self._fetch_blog_detail(blog['url'])
                 if blog_detail:
                     blog['content'] = blog_detail.get('content', '')
                     blog['images'] = blog_detail.get('images', [])
+                    # 使用详情页获取的日期（更准确）
+                    if blog_detail.get('publish_date'):
+                        blog['publish_date'] = blog_detail['publish_date']
                 
                 # 保存博客信息
                 self.db.save_blog(blog)
@@ -744,7 +750,7 @@ class N46Scraper:
             url: 博客URL
             
         Returns:
-            博客详情字典
+            博客详情字典，包含 content, images, publish_date
         """
         try:
             response = self.session.get(url, timeout=TIMEOUT)
@@ -798,9 +804,40 @@ class N46Scraper:
                         if src not in images:
                             images.append(src)
             
+            # 提取发布日期
+            publish_date = None
+            # 尝试多种日期选择器
+            date_selectors = [
+                '.bd--hd__date',
+                '.bd--ne__date',
+                'time',
+                '.date',
+                '.publish-date'
+            ]
+            for selector in date_selectors:
+                date_elem = soup.select_one(selector)
+                if date_elem:
+                    date_text = date_elem.get_text().strip()
+                    # 解析日期格式 2026.03.02 19:54 或 2026.03.02
+                    if date_text:
+                        # 提取日期部分
+                        date_match = re.search(r'(\d{4}[./-]\d{2}[./-]\d{2})', date_text)
+                        if date_match:
+                            date_str = date_match.group(1)
+                            for fmt in ['%Y.%m.%d', '%Y/%m/%d', '%Y-%m-%d']:
+                                try:
+                                    dt = datetime.strptime(date_str, fmt)
+                                    publish_date = dt.strftime('%Y/%m/%d %H:%M:%S')
+                                    break
+                                except:
+                                    continue
+                        if publish_date:
+                            break
+            
             return {
                 'content': content,
-                'images': images
+                'images': images,
+                'publish_date': publish_date
             }
             
         except Exception as e:

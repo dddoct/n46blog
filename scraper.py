@@ -336,10 +336,10 @@ class N46Scraper:
                 member_filename = f"{english_name}_{date_str}_{img_index}{ext}"
                 member_dir = Path(BY_MEMBER_DIR) / author  # 使用日文原名作为目录名
                 
-                # 任务2: by_date - 按年月分子目录，文件名: 英文成员名_序号.jpg
-                # 例如: by_date/202603/OgawaAya_1.jpg
+                # 任务2: by_date - 按年月/日期分子目录，文件名: 英文成员名_序号.jpg
+                # 例如: by_date/202601/20260102/OgawaAya_1.jpg
                 date_filename = f"{english_name}_{img_index}{ext}"
-                date_dir = Path(BY_DATE_DIR) / yearmonth
+                date_dir = Path(BY_DATE_DIR) / yearmonth / date_str  # 202601/20260102
                 
                 # 任务3: by_blog - 保持原有格式
                 blog_filename = self._generate_filename(original_url, img_id)

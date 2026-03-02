@@ -22,6 +22,15 @@ from config import (
 from database import Database
 from members import get_english_name
 
+# Selenium imports
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+
 
 class N46Scraper:
     """乃木坂46博客爬虫类"""
@@ -168,60 +177,230 @@ class N46Scraper:
         
         return True
     
+    def _create_selenium_driver(self):
+        """创建Selenium浏览器驱动"""
+        chrome_options = Options()
+        chrome_options.add_argument('--headless')  # 无头模式
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+        
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        return driver
+    
+    def _parse_total_blog_page(self, driver, page_num):
+        """使用Selenium解析总博客页面
+        
+        Args:
+            driver: Selenium WebDriver
+            page_num: 页码（从1开始）
+            
+        Returns:
+            list: 博客列表
+        """
+        url = f"https://www.nogizaka46.com/s/n46/diary/MEMBER?ima=5900&page={page_num}"
+        print(f"  正在加载页面...", end=" ")
+        
+        try:
+            driver.get(url)
+            
+            # 等待页面加载完成（等待博客列表出现）
+            wait = WebDriverWait(driver, 10)
+            # 等待包含博客链接的元素出现
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/diary/detail/']")))
+            
+            # 再等待一下确保JavaScript渲染完成
+            time.sleep(2)
+            
+            # 获取页面源码
+            html = driver.page_source
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # 查找博客链接
+            blog_links = soup.find_all('a', href=re.compile(r'/s/n46/diary/detail/\d+'))
+            print(f"找到 {len(blog_links)} 个博客链接")
+            
+            blogs = []
+            for link in blog_links:
+                href = link.get('href', '')
+                blog_id_match = re.search(r'/detail/(\d+)', href)
+                if not blog_id_match:
+                    continue
+                
+                blog_id = blog_id_match.group(1)
+                
+                # 获取标题
+                title_elem = link.find(class_=re.compile('title|tit', re.I)) or link
+                title = title_elem.get_text().strip()
+                
+                # 获取作者
+                author_elem = link.find(class_=re.compile('name|author|member', re.I))
+                author = author_elem.get_text().strip() if author_elem else 'unknown'
+                
+                # 获取日期
+                date_elem = link.find(class_=re.compile('date|time', re.I))
+                date_str = date_elem.get_text().strip() if date_elem else ''
+                
+                # 解析日期 - 支持多种格式
+                publish_date = 'unknown'
+                if date_str:
+                    # 清理日期字符串
+                    date_clean = date_str.split()[0] if ' ' in date_str else date_str
+                    
+                    for fmt in ['%Y.%m.%d', '%Y/%m/%d', '%Y-%m-%d']:
+                        try:
+                            dt = datetime.strptime(date_clean, fmt)
+                            publish_date = dt.strftime('%Y/%m/%d %H:%M:%S')
+                            break
+                        except:
+                            continue
+                
+                if title and blog_id:
+                    blogs.append({
+                        'id': blog_id,
+                        'title': title,
+                        'author': author,
+                        'publish_date': publish_date,
+                        'url': f"https://www.nogizaka46.com/s/n46/diary/detail/{blog_id}"
+                    })
+            
+            return blogs
+            
+        except Exception as e:
+            print(f"错误: {e}")
+            return []
+    
     def crawl_blog_list(self, start_page=1, max_pages=None):
-        """爬取博客列表"""
-        page = start_page
-        total_blogs = 0
+        """爬取博客列表 - 使用Selenium实现真正的分页
         
+        通过Selenium浏览器访问总博客页面，支持真正的分页功能。
+        
+        Args:
+            start_page: 起始页码（从1开始）
+            max_pages: 最大爬取页数（默认None表示无限制）
+        """
         print(f"开始爬取博客列表...")
+        print(f"起始页: {start_page}, 最大页数: {max_pages if max_pages else '无限制'}")
+        print("="*60)
         
-        while True:
-            print(f"\n正在获取第 {page} 页...")
-            
-            # 调用API获取博客列表
-            params = {"page": page}
-            data = self.fetch_api("list/blog", params)
-            
-            if not data:
-                print("API请求失败，停止爬取")
-                break
-            
-            # 解析博客列表
-            blogs = self.parse_blog_list_api(data)
-            
-            if not blogs:
-                print("没有更多博客了")
-                break
-            
-            print(f"获取到 {len(blogs)} 篇博客")
-            
-            for blog in blogs:
-                # 保存博客信息
-                self.db.save_blog(blog)
-                total_blogs += 1
+        # 创建Selenium驱动
+        print("\n正在启动浏览器...")
+        driver = None
+        try:
+            driver = self._create_selenium_driver()
+            print("浏览器启动成功")
+        except Exception as e:
+            print(f"浏览器启动失败: {e}")
+            print("请确保已安装Chrome浏览器")
+            return 0
+        
+        total_blogs = 0
+        processed_blogs = set()  # 用于去重
+        current_page = start_page
+        
+        try:
+            while max_pages is None or (current_page - start_page) < max_pages:
+                print(f"\n{'='*60}")
+                print(f"正在爬取第 {current_page} 页")
+                print(f"{'='*60}")
                 
-                # 从内容中提取图片
-                images = self._extract_images_from_content(blog['content'], blog['id'])
-                for img in images:
-                    self.db.save_image(img)
+                # 解析页面
+                blogs = self._parse_total_blog_page(driver, current_page)
                 
-                # 过滤emoji字符避免编码错误
-                title = blog['title'][:30].encode('gbk', errors='ignore').decode('gbk')
-                print(f"  [{total_blogs}] {title}... - 作者: {blog['author']} - 图片: {len(images)}张")
-            
-            # 检查是否还有下一页
-            total_count = int(data.get('count', 0))
-            print(f"  进度: {total_blogs}/{total_count}")
-            
-            page += 1
-            if max_pages and page > max_pages:
-                print(f"\n已达到最大页数限制 ({max_pages})")
-                break
+                if not blogs:
+                    print("本页无博客，停止爬取")
+                    break
+                
+                new_blogs = 0
+                for blog in blogs:
+                    # 去重检查
+                    if blog['id'] in processed_blogs:
+                        continue
+                    processed_blogs.add(blog['id'])
+                    
+                    total_blogs += 1
+                    new_blogs += 1
+                    
+                    print(f"  [{total_blogs}] {blog['title'][:30]}... - {blog['author']}")
+                    
+                    # 获取博客详情（包含图片）
+                    blog_detail = self._fetch_blog_detail(blog['url'])
+                    if blog_detail:
+                        blog['content'] = blog_detail.get('content', '')
+                        blog['images'] = blog_detail.get('images', [])
+                    
+                    # 保存博客信息
+                    self.db.save_blog(blog)
+                    
+                    # 保存图片信息
+                    for img_url in blog.get('images', []):
+                        img_data = {
+                            'blog_id': blog['id'],
+                            'original_url': img_url,
+                            'local_path': None,
+                            'download_status': 0
+                        }
+                        self.db.save_image(img_data)
+                
+                print(f"\n第 {current_page} 页完成: {new_blogs} 篇新博客")
+                
+                # 如果这页没有新博客，可能是到了末尾
+                if new_blogs == 0:
+                    print("没有新博客了，停止爬取")
+                    break
+                
+                current_page += 1
+                time.sleep(DOWNLOAD_DELAY * 2)  # Selenium需要更多延迟
+                
+        finally:
+            # 关闭浏览器
+            if driver:
+                driver.quit()
+                print("\n浏览器已关闭")
         
         print(f"\n{'='*60}")
-        print(f"博客列表爬取完成！共 {total_blogs} 篇博客")
+        print(f"博客列表爬取完成！")
+        print(f"  共爬取: {current_page - start_page} 页")
+        print(f"  共获取: {total_blogs} 篇唯一博客")
         print(f"{'='*60}")
         return total_blogs
+        
+        print(f"\n{'='*60}")
+        print(f"博客列表爬取完成！")
+        print(f"  共处理: {len(members)} 名成员")
+        print(f"  共获取: {total_blogs} 篇唯一博客")
+        print(f"{'='*60}")
+        return total_blogs
+    
+    def _get_all_members(self):
+        """获取所有成员列表
+        
+        Returns:
+            list: [(成员名, 成员ID), ...]
+        """
+        members = []
+        
+        try:
+            # 使用API获取成员列表
+            data = self.fetch_api("list/member")
+            if data and 'data' in data:
+                for item in data['data']:
+                    name = item.get('name', '')
+                    # API使用'code'字段作为成员ID，不是'id'
+                    member_id = item.get('code', '')
+                    # 过滤掉团体条目（如"乃木坂46"）和毕业成员
+                    # 只保留有生日信息的（是真实成员）
+                    birthday = item.get('birthday', '')
+                    graduation = item.get('graduation', '')
+                    if name and member_id and birthday and graduation != 'YES':
+                        members.append((name, member_id))
+        except Exception as e:
+            print(f"获取成员列表失败: {e}")
+        
+        return members
     
     def _extract_images_from_content(self, content_html, blog_id):
         """从博客内容HTML中提取图片"""
@@ -409,11 +588,11 @@ class N46Scraper:
         return filename.strip() or 'unknown'
     
     def crawl_by_member(self, member_name, max_pages=3):
-        """指定成员检索模式 - 使用成员个人blog界面API
+        """指定成员检索模式 - 使用成员个人blog网页
         
         Args:
             member_name: 成员日文名（如"池田 瑛紗"）
-            max_pages: 最大爬取页数（默认3页）
+            max_pages: 最大爬取页数（默认3页，每页10篇博客）
             
         Returns:
             爬取的博客数量
@@ -426,26 +605,32 @@ class N46Scraper:
             return 0
         
         print(f"开始检索成员: {member_name} (ID: {member_id})")
-        print(f"页数限制: {max_pages}")
+        print(f"页数限制: {max_pages} (每页约10篇博客)")
         print("="*60)
         
-        page = 1
+        page = 0  # 从0开始，第1页对应page=0
         total_blogs = 0
         
         while True:
-            print(f"\n正在获取第 {page} 页...")
+            print(f"\n正在获取第 {page + 1} 页...")
             
-            # 使用成员个人blog界面的API
-            # URL格式: /s/n46/api/list/blog?ct=成员ID&page=页数
+            # 使用成员个人blog界面的网页
+            # 注意：第1页是page=0，第2页是page=1
+            url = f"https://www.nogizaka46.com/s/n46/diary/MEMBER/list"
             params = {"ct": member_id, "page": page}
-            data = self.fetch_api("list/blog", params)
             
-            if not data:
-                print("API请求失败，停止爬取")
+            try:
+                response = self.session.get(url, params=params, timeout=TIMEOUT)
+                response.raise_for_status()
+                response.encoding = 'utf-8'
+                html = response.text
+                time.sleep(DOWNLOAD_DELAY)
+            except Exception as e:
+                print(f"获取页面失败: {e}")
                 break
             
             # 解析博客列表
-            blogs = self.parse_blog_list_api(data)
+            blogs = self._parse_member_blog_list(html, member_name)
             
             if not blogs:
                 print("没有更多博客了")
@@ -456,24 +641,33 @@ class N46Scraper:
             for blog in blogs:
                 total_blogs += 1
                 
+                # 获取博客详情（包含图片）
+                blog_detail = self._fetch_blog_detail(blog['url'])
+                if blog_detail:
+                    blog['content'] = blog_detail.get('content', '')
+                    blog['images'] = blog_detail.get('images', [])
+                
                 # 保存博客信息
                 self.db.save_blog(blog)
                 
-                # 从内容中提取图片
-                images = self._extract_images_from_content(blog['content'], blog['id'])
-                for img in images:
-                    self.db.save_image(img)
+                # 保存图片信息
+                for img_url in blog.get('images', []):
+                    img_data = {
+                        'blog_id': blog['id'],
+                        'original_url': img_url,
+                        'local_path': None,
+                        'download_status': 0
+                    }
+                    self.db.save_image(img_data)
                 
                 # 过滤emoji字符避免编码错误
                 title = blog['title'][:30].encode('gbk', errors='ignore').decode('gbk')
-                print(f"  + [{total_blogs}] {title}... - 日期: {blog['publish_date'][:10]} - 图片: {len(images)}张")
+                print(f"  + [{total_blogs}] {title}... - 日期: {blog['publish_date'][:10]} - 图片: {len(blog.get('images', []))}张")
             
-            # 检查是否还有下一页
-            total_count = int(data.get('count', 0))
-            print(f"  进度: {total_blogs}/{total_count}")
+            print(f"  进度: 第{page + 1}页，本页{len(blogs)}篇")
             
             page += 1
-            if page > max_pages:
+            if page >= max_pages:
                 print(f"\n已达到最大页数限制 ({max_pages})")
                 break
         
@@ -482,6 +676,136 @@ class N46Scraper:
         print(f"  共获取: {total_blogs} 篇博客")
         print(f"{'='*60}")
         return total_blogs
+    
+    def _parse_member_blog_list(self, html, member_name):
+        """解析成员博客列表页面
+        
+        Args:
+            html: 网页HTML
+            member_name: 成员日文名
+            
+        Returns:
+            博客列表
+        """
+        from bs4 import BeautifulSoup
+        import re
+        
+        soup = BeautifulSoup(html, 'html.parser')
+        blogs = []
+        
+        # 查找博客链接
+        links = soup.find_all('a', href=re.compile(r'/s/n46/diary/detail/\d+'))
+        
+        for link in links:
+            href = link.get('href', '')
+            if not href:
+                continue
+            
+            # 提取博客ID
+            blog_id_match = re.search(r'/s/n46/diary/detail/(\d+)', href)
+            if not blog_id_match:
+                continue
+            blog_id = blog_id_match.group(1)
+            
+            # 获取链接文本（包含标题和日期）
+            link_text = link.get_text().strip()
+            
+            # 解析标题和日期
+            # 格式通常是: 标题\n\n日期时间
+            lines = [line.strip() for line in link_text.split('\n') if line.strip()]
+            if len(lines) >= 2:
+                title = lines[0]
+                date_str = lines[-1]
+            else:
+                title = link_text
+                date_str = 'unknown'
+            
+            # 构建完整URL
+            full_url = f"https://www.nogizaka46.com{href.split('?')[0]}"
+            
+            blog = {
+                'id': blog_id,
+                'title': title,
+                'author': member_name,
+                'author_id': None,
+                'publish_date': date_str,
+                'url': full_url,
+                'content': '',
+                'images': []
+            }
+            blogs.append(blog)
+        
+        return blogs
+    
+    def _fetch_blog_detail(self, url):
+        """获取博客详情
+        
+        Args:
+            url: 博客URL
+            
+        Returns:
+            博客详情字典
+        """
+        try:
+            response = self.session.get(url, timeout=TIMEOUT)
+            response.raise_for_status()
+            response.encoding = 'utf-8'
+            html = response.text
+            time.sleep(DOWNLOAD_DELAY)
+            
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # 查找博客内容区域 - 尝试多种可能的选择器
+            content_div = None
+            selectors = [
+                'div.blog-article',
+                'article',
+                'div[class*="blog"]',
+                'div[class*="content"]',
+                'div[class*="article"]',
+                'main',
+                '.main',
+                '#main'
+            ]
+            
+            for selector in selectors:
+                content_div = soup.select_one(selector)
+                if content_div:
+                    break
+            
+            # 如果还是没找到，使用整个body
+            if not content_div:
+                content_div = soup.body
+            
+            if not content_div:
+                return None
+            
+            content = str(content_div)
+            
+            # 提取图片（从整个页面中）
+            images = []
+            for img in soup.find_all('img'):
+                src = img.get('src', '')
+                if src:
+                    # 过滤掉非博客图片（如logo、图标等）
+                    if '/diary/' in src or '/blog/' in src or '/files/' in src:
+                        # 转换为完整URL
+                        if src.startswith('//'):
+                            src = 'https:' + src
+                        elif src.startswith('/'):
+                            src = 'https://www.nogizaka46.com' + src
+                        if src not in images:
+                            images.append(src)
+            
+            return {
+                'content': content,
+                'images': images
+            }
+            
+        except Exception as e:
+            print(f"获取博客详情失败: {url}, 错误: {e}")
+            return None
     
     def _get_member_id(self, member_name):
         """根据成员名字获取成员ID
@@ -589,19 +913,19 @@ class N46Scraper:
             date = img_data[4]
             
             try:
-                # 解析日期
+                # 解析日期 - 支持多种格式
                 date_str = 'unknown'
                 if date and date != 'unknown':
-                    try:
-                        for fmt in ['%Y/%m/%d %H:%M:%S', '%Y.%m.%d', '%Y-%m-%d']:
-                            try:
-                                dt = datetime.strptime(date, fmt)
-                                date_str = dt.strftime('%Y%m%d')
-                                break
-                            except:
-                                continue
-                    except:
-                        pass
+                    # 清理日期字符串（去除时间部分）
+                    date_clean = date.split()[0] if ' ' in date else date
+                    
+                    for fmt in ['%Y/%m/%d', '%Y.%m.%d', '%Y-%m-%d', '%Y/%m/%d %H:%M:%S', '%Y.%m.%d %H:%M:%S']:
+                        try:
+                            dt = datetime.strptime(date_clean, fmt)
+                            date_str = dt.strftime('%Y%m%d')
+                            break
+                        except:
+                            continue
                 
                 # 获取文件扩展名
                 ext = self._get_extension(original_url)

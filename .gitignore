@@ -1,6 +1,8 @@
 output1/
 output2/
 __pycache__/
+dist/
+build/
 *.pyc
 *.db
 n46blog_prompt1.md
